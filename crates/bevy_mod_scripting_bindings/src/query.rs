@@ -353,6 +353,7 @@ impl WorldAccessGuard<'_> {
                                 base_id: super::ReflectBase::Component(r.id(), c.component_id()),
                             },
                             reflect_path: ParsedPath(vec![]),
+                            access_mode: super::reference::AccessMode::Write,
                         })
                         .collect();
                     ScriptQueryResult {

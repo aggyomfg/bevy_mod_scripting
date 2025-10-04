@@ -6,7 +6,10 @@ use std::ops::Deref;
 
 use bevy_app::App;
 use bevy_asset::{AssetServer, Handle};
-use bevy_ecs::{entity::Entity, prelude::AppTypeRegistry, schedule::Schedules, world::World};
+use bevy_ecs::{
+    component::ComponentTicks, entity::Entity, prelude::AppTypeRegistry, schedule::Schedules,
+    world::World,
+};
 use bevy_reflect::ReflectRef;
 use bevy_mod_scripting_bindings::{
     DynamicScriptFunctionMut, FunctionInfo, GlobalNamespace, InteropError, PartialReflectExt,
@@ -147,12 +150,16 @@ impl World {
 
     /// Tries to retrieve the given component type on an entity.
     ///
+    /// **DEPRECATED**: Triggers change detection. Use `get_component_read` for read-only
+    /// access or `get_component_mut` for explicit mutable access.
+    ///
     /// Arguments:
     /// * `ctxt`: The function call context.
     /// * `entity`: The entity to retrieve the component from.
     /// * `registration`: The component to retrieve.
     /// Returns:
     /// * `component`: The component on the entity, if it exists.
+    #[deprecated(since = "0.16.0", note = "Use `get_component_read` for read-only access or `get_component_mut` for mutable access to avoid unintended change detection")]
     fn get_component(
         ctxt: FunctionCallContext,
         entity: Val<Entity>,
@@ -161,6 +168,57 @@ impl World {
         profiling::function_scope!("get_component");
         let world = ctxt.world()?;
         let val = world.get_component(*entity, registration.into_inner())?;
+        Ok(val)
+    }
+
+    /// Retrieves a component for read-only access without triggering change detection.
+    ///
+    /// Use this when you only need to read component data.
+    /// Attempting to mutate the returned reference will return an error.
+    ///
+    /// Arguments:
+    /// * `ctxt`: The function call context.
+    /// * `entity`: The entity to retrieve the component from.
+    /// * `registration`: The component to retrieve.
+    /// Returns:
+    /// * `component`: The read-only component reference on the entity, if it exists.
+    fn get_component_read(
+        ctxt: FunctionCallContext,
+        entity: Val<Entity>,
+        registration: Val<ScriptComponentRegistration>,
+    ) -> Result<Option<ReflectReference>, InteropError> {
+        profiling::function_scope!("get_component_read");
+        let world = ctxt.world()?;
+        let val = world.get_component_with_access(
+            *entity,
+            registration.into_inner(),
+            bevy_mod_scripting_bindings::reference::AccessMode::Read,
+        )?;
+        Ok(val)
+    }
+
+    /// Retrieves a component for mutable access, triggering change detection.
+    ///
+    /// This is the explicit mutable version of the deprecated `get_component`.
+    ///
+    /// Arguments:
+    /// * `ctxt`: The function call context.
+    /// * `entity`: The entity to retrieve the component from.
+    /// * `registration`: The component to retrieve.
+    /// Returns:
+    /// * `component`: The mutable component reference on the entity, if it exists.
+    fn get_component_mut(
+        ctxt: FunctionCallContext,
+        entity: Val<Entity>,
+        registration: Val<ScriptComponentRegistration>,
+    ) -> Result<Option<ReflectReference>, InteropError> {
+        profiling::function_scope!("get_component_mut");
+        let world = ctxt.world()?;
+        let val = world.get_component_with_access(
+            *entity,
+            registration.into_inner(),
+            bevy_mod_scripting_bindings::reference::AccessMode::Write,
+        )?;
         Ok(val)
     }
 
@@ -182,6 +240,35 @@ impl World {
         world.has_component(*entity, registration.component_id())
     }
 
+    /// Retrieves the component ticks for a component on an entity.
+    ///
+    /// This allows scripts to track when a component was last added or changed.
+    /// Use this to implement custom change detection logic, such as detecting
+    /// whether read-only access triggered change detection.
+    ///
+    /// Arguments:
+    /// * `ctxt`: The function call context.
+    /// * `entity`: The entity to get component ticks for.
+    /// * `registration`: The component type to get ticks for.
+    /// Returns:
+    /// * `ticks`: The ComponentTicks containing added and changed tick information, or None if the component doesn't exist.
+    fn get_component_ticks(
+        ctxt: FunctionCallContext,
+        entity: Val<Entity>,
+        registration: Val<ScriptComponentRegistration>,
+    ) -> Result<Option<Val<ComponentTicks>>, InteropError> {
+        profiling::function_scope!("get_component_ticks");
+        let world = ctxt.world()?;
+        
+        // Get the ticks using the entity's component
+        let ticks = world.with_global_access(|w| {
+            let entity_ref = w.entity(*entity);
+            entity_ref.get_change_ticks_by_id(registration.component_id())
+        })?;
+        
+        Ok(ticks.map(Val))
+    }
+
     /// Removes the given component from the entity.
     /// Arguments:
     /// * `ctxt`: The function call context.
@@ -200,11 +287,16 @@ impl World {
     }
 
     /// Retrieves the resource with the given registration.
+    /// 
+    /// **DEPRECATED**: Triggers change detection. Use `get_resource_read` for read-only
+    /// access or `get_resource_mut` for explicit mutable access.
+    /// 
     /// Arguments:
     /// * `ctxt`: The function call context.
     /// * `registration`: The registration of the resource to retrieve.
     /// Returns:
     /// * `resource`: The resource, if it exists.
+    #[deprecated(since = "0.16.0", note = "Use `get_resource_read` for read-only access or `get_resource_mut` for mutable access to avoid unintended change detection")]
     fn get_resource(
         ctxt: FunctionCallContext,
         registration: Val<ScriptResourceRegistration>,
@@ -212,6 +304,51 @@ impl World {
         profiling::function_scope!("get_resource");
         let world = ctxt.world()?;
         let val = world.get_resource(registration.resource_id())?;
+        Ok(val)
+    }
+
+    /// Retrieves a resource for read-only access without triggering change detection.
+    ///
+    /// Use this when you only need to read resource data.
+    /// Attempting to mutate the returned reference will return an error.
+    ///
+    /// Arguments:
+    /// * `ctxt`: The function call context.
+    /// * `registration`: The registration of the resource to retrieve.
+    /// Returns:
+    /// * `resource`: The read-only resource reference, if it exists.
+    fn get_resource_read(
+        ctxt: FunctionCallContext,
+        registration: Val<ScriptResourceRegistration>,
+    ) -> Result<Option<ReflectReference>, InteropError> {
+        profiling::function_scope!("get_resource_read");
+        let world = ctxt.world()?;
+        let val = world.get_resource_with_access(
+            registration.resource_id(),
+            bevy_mod_scripting_bindings::reference::AccessMode::Read,
+        )?;
+        Ok(val)
+    }
+
+    /// Retrieves a resource for mutable access, triggering change detection.
+    ///
+    /// This is the explicit mutable version of the deprecated `get_resource`.
+    ///
+    /// Arguments:
+    /// * `ctxt`: The function call context.
+    /// * `registration`: The registration of the resource to retrieve.
+    /// Returns:
+    /// * `resource`: The mutable resource reference, if it exists.
+    fn get_resource_mut(
+        ctxt: FunctionCallContext,
+        registration: Val<ScriptResourceRegistration>,
+    ) -> Result<Option<ReflectReference>, InteropError> {
+        profiling::function_scope!("get_resource_mut");
+        let world = ctxt.world()?;
+        let val = world.get_resource_with_access(
+            registration.resource_id(),
+            bevy_mod_scripting_bindings::reference::AccessMode::Write,
+        )?;
         Ok(val)
     }
 

@@ -32,13 +32,32 @@ use {
     },
 };
 
+/// Determines the access mode for a reflected reference.
+/// 
+/// This controls whether the reference can be mutated and whether
+/// Bevy's change detection is triggered.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Reflect, DebugWithTypeInfo)]
+#[reflect(opaque)]
+#[debug_with_type_info(bms_display_path = "bevy_mod_scripting_display")]
+#[repr(u8)]
+pub enum AccessMode {
+    /// Read-only access. Does not trigger change detection.
+    /// Calling `with_reflect_mut` will fail.
+    #[default]
+    Read,
+    /// Read-write access. Triggers change detection when mutated.
+    /// Allows both read and write operations.
+    Write,
+}
+
 /// A reference to an arbitrary reflected instance.
 ///
 /// The reference can point to either the ECS, or to the allocator.
 ///
-/// References are composed of two parts:
+/// References are composed of three parts:
 /// - The base kind, which specifies where the reference points to
-/// - The path, which specifies how to access the value from the base.
+/// - The path, which specifies how to access the value from the base
+/// - The access mode, which determines whether the reference can be mutated
 ///
 /// Bindings defined on this type, apply to ALL references.
 #[derive(Clone, PartialEq, Eq, Reflect, DebugWithTypeInfo)]
@@ -52,6 +71,9 @@ pub struct ReflectReference {
     // needs benchmarks first though
     /// The path from the top level type to the actual value we want to access
     pub reflect_path: ParsedPath,
+    /// The access mode determining whether this reference can be mutated.
+    /// Read-only references do not trigger change detection.
+    pub access_mode: AccessMode,
 }
 
 impl DisplayWithTypeInfo for ReflectReference {
@@ -101,6 +123,7 @@ impl Default for ReflectReference {
                 base_id: ReflectBase::Owned(ReflectAllocationId::new(0)),
             },
             reflect_path: ParsedPath(vec![]),
+            access_mode: AccessMode::Read,
         }
     }
 }
@@ -175,6 +198,7 @@ impl ReflectReference {
                 base_id: ReflectBase::Owned(id),
             },
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         }
     }
 
@@ -187,6 +211,7 @@ impl ReflectReference {
                 base_id: ReflectBase::Owned(id),
             },
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         }
     }
 
@@ -201,6 +226,7 @@ impl ReflectReference {
         Ok(ReflectReference {
             base: ReflectBaseType::new_allocated_base_partial(value, allocator)?,
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         })
     }
 
@@ -212,6 +238,7 @@ impl ReflectReference {
         ReflectReference {
             base: ReflectBaseType::new_allocated_base(value, allocator),
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         }
     }
 
@@ -220,6 +247,7 @@ impl ReflectReference {
         Ok(Self {
             base: ReflectBaseType::new_resource_base::<T>(world)?,
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         })
     }
 
@@ -231,6 +259,7 @@ impl ReflectReference {
         Ok(Self {
             base: ReflectBaseType::new_component_base::<T>(entity, world)?,
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         })
     }
 
@@ -247,6 +276,7 @@ impl ReflectReference {
                 base_id: ReflectBase::Component(entity, component_id),
             },
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         }
     }
 
@@ -259,6 +289,7 @@ impl ReflectReference {
                 base_id: ReflectBase::Resource(component_id),
             },
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         }
     }
 
@@ -272,7 +303,44 @@ impl ReflectReference {
         Ok(Self {
             base: ReflectBaseType::new_asset_base(handle, asset_type_id, world)?,
             reflect_path: ParsedPath(Vec::default()),
+            access_mode: AccessMode::Write,
         })
+    }
+
+    /// Create a new reference to component by id with explicit access mode.
+    /// 
+    /// If the type id is incorrect, you will get runtime errors when trying to access the value.
+    pub fn new_component_ref_by_id_with_access(
+        entity: Entity,
+        component_id: ComponentId,
+        type_id: TypeId,
+        access_mode: AccessMode,
+    ) -> Self {
+        Self {
+            base: ReflectBaseType {
+                type_id,
+                base_id: ReflectBase::Component(entity, component_id),
+            },
+            reflect_path: ParsedPath(Vec::default()),
+            access_mode,
+        }
+    }
+
+    /// Create a new reference to resource by id with explicit access mode.
+    /// If the type id is incorrect, you will get runtime errors when trying to access the value.
+    pub fn new_resource_ref_by_id_with_access(
+        component_id: ComponentId,
+        type_id: TypeId,
+        access_mode: AccessMode,
+    ) -> Self {
+        Self {
+            base: ReflectBaseType {
+                type_id,
+                base_id: ReflectBase::Resource(component_id),
+            },
+            reflect_path: ParsedPath(Vec::default()),
+            access_mode,
+        }
     }
 
     /// Tries get an untyped asset handle from this reference.
@@ -421,12 +489,26 @@ impl ReflectReference {
 
     /// The way to access the value of the reference, that is the pointed-to value.
     /// This method is safe to use as it ensures no-one else has aliasing access to the value at the same time.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the reference has `AccessMode::Read` access mode.
+    /// Use `with_reflect` for read-only access that doesn't trigger change detection.
     #[track_caller]
     pub fn with_reflect_mut<O, F: FnOnce(&mut dyn PartialReflect) -> O>(
         &self,
         world: WorldGuard,
         f: F,
     ) -> Result<O, InteropError> {
+        // Check if we're allowed to mutate
+        if matches!(self.access_mode, AccessMode::Read) {
+            return Err(InteropError::unsupported_operation(
+                self.tail_type_id(world.clone()).ok().flatten(),
+                None,
+                "Cannot mutate a read-only reference. Use get_component_mut to obtain a mutable reference.".to_string(),
+            ));
+        }
+        
         let access_id = ReflectAccessId::for_reference(self.base.base_id.clone());
         with_access_write!(
             &world.inner.accesses,

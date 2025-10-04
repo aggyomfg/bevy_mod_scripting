@@ -17,6 +17,7 @@ use super::{
         namespace::Namespace,
         script_function::{AppScriptFunctionRegistry, DynamicScriptFunction, FunctionCallContext},
     },
+    reference::AccessMode,
     schedule::AppScheduleRegistry,
     script_value::ScriptValue,
     with_global_access,
@@ -1097,6 +1098,16 @@ impl WorldAccessGuard<'_> {
         entity: Entity,
         component_registration: ScriptComponentRegistration,
     ) -> Result<Option<ReflectReference>, InteropError> {
+        self.get_component_with_access(entity, component_registration, AccessMode::Write)
+    }
+
+    /// Get the component from the entity with explicit access mode.
+    pub fn get_component_with_access(
+        &self,
+        entity: Entity,
+        component_registration: ScriptComponentRegistration,
+        access_mode: AccessMode,
+    ) -> Result<Option<ReflectReference>, InteropError> {
         let cell = self.as_unsafe_world_cell()?;
         let entity = cell
             .get_entity(entity)
@@ -1112,6 +1123,7 @@ impl WorldAccessGuard<'_> {
                     ),
                 },
                 reflect_path: ParsedPath(vec![]),
+                access_mode,
             }))
         } else {
             Ok(None)
@@ -1146,6 +1158,15 @@ impl WorldAccessGuard<'_> {
         &self,
         resource_id: ComponentId,
     ) -> Result<Option<ReflectReference>, InteropError> {
+        self.get_resource_with_access(resource_id, AccessMode::Write)
+    }
+
+    /// Get the resource with explicit access mode.
+    pub fn get_resource_with_access(
+        &self,
+        resource_id: ComponentId,
+        access_mode: AccessMode,
+    ) -> Result<Option<ReflectReference>, InteropError> {
         let cell = self.as_unsafe_world_cell()?;
         let component_info = match cell.components().get_info(resource_id) {
             Some(info) => info,
@@ -1169,6 +1190,7 @@ impl WorldAccessGuard<'_> {
                 base_id: ReflectBase::Resource(resource_id),
             },
             reflect_path: ParsedPath(vec![]),
+            access_mode,
         }))
     }
 
