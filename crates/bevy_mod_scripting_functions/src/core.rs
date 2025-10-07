@@ -199,6 +199,31 @@ impl World {
         world.remove_component(*entity, registration.clone())
     }
 
+    /// Retrieves the component ticks for a component on an entity.
+    ///
+    /// Arguments:
+    /// * `ctxt`: The function call context.
+    /// * `entity`: The entity to get component ticks for.
+    /// * `registration`: The component type to get ticks for.
+    /// Returns:
+    /// * `ticks`: The ComponentTicks containing added and changed tick information, or None if the component doesn't exist.
+    fn get_component_ticks(
+        ctxt: FunctionCallContext,
+        entity: Val<Entity>,
+        registration: Val<ScriptComponentRegistration>,
+    ) -> Result<Option<Val<bevy_ecs::component::ComponentTicks>>, InteropError> {
+        profiling::function_scope!("get_component_ticks");
+        let world = ctxt.world()?;
+        
+        // Get the ticks using the entity's component
+        let ticks = world.with_global_access(|w| {
+            let entity_ref = w.entity(*entity);
+            entity_ref.get_change_ticks_by_id(registration.component_id())
+        })?;
+        
+        Ok(ticks.map(Val))
+    }
+
     /// Retrieves the resource with the given registration.
     /// Arguments:
     /// * `ctxt`: The function call context.
